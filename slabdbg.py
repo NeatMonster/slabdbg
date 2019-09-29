@@ -37,6 +37,43 @@ class KmemCacheFree(gdb.Breakpoint):
         return self.command.notify_free(name, addr)
 
 
+class NewSlabFinish(gdb.FinishBreakpoint):
+    def __init__(self, command, name):
+        frame = gdb.newest_frame().older()
+        super(NewSlabFinish, self).__init__(frame, internal=True)
+        self.command = command
+        self.name = name
+
+    def stop(self):
+        addr = long(self.return_value) & Slab.UNSIGNED_LONG
+        return self.command.notify_new(self.name, addr)
+
+
+class NewSlab(gdb.Breakpoint):
+    def __init__(self, command):
+        super(NewSlab, self).__init__("new_slab", internal=True)
+        self.command = command
+
+    def stop(self):
+        slab_cache = gdb.selected_frame().read_var("s")
+        name = slab_cache["name"].string()
+        if name in self.command.watch_caches:
+            NewSlabFinish(self.command, name)
+
+
+class DiscardSlab(gdb.Breakpoint):
+    def __init__(self, command):
+        super(DiscardSlab, self).__init__("discard_slab", internal=True)
+        self.command = command
+
+    def stop(self):
+        slab_cache = gdb.selected_frame().read_var("s")
+        name = slab_cache["name"].string()
+        page = gdb.selected_frame().read_var("page")
+        addr = long(page) & Slab.UNSIGNED_LONG
+        return self.command.notify_discard(name, addr)
+
+
 class Slab(gdb.Command):
     UNSIGNED_INT = 0xFFFFFFFF
     UNSIGNED_LONG = 0xFFFFFFFFFFFFFFFF
@@ -47,15 +84,25 @@ class Slab(gdb.Command):
         self.per_cpu_offset = gdb.lookup_global_symbol("__per_cpu_offset").value()
         self.memstart_addr = gdb.lookup_global_symbol("memstart_addr").value()
 
-        self.breakpoints = [KmemCacheAlloc(self), KmemCacheFree(self)]
+        self.cache_alloc_bp = KmemCacheAlloc(self)
+        self.cache_free_bp = KmemCacheFree(self)
+        self.new_slab_bp = NewSlab(self)
+        self.discard_slab_bp = DiscardSlab(self)
+
         self.trace_caches = []
         self.break_caches = []
+        self.watch_caches = []
+        self.slabs_list = []
         self.update_breakpoints()
 
     def update_breakpoints(self):
         enabled = bool(self.trace_caches) or bool(self.break_caches)
-        for breakpoint in self.breakpoints:
-            breakpoint.enabled = enabled
+        self.cache_alloc_bp.enabled = enabled
+        self.cache_free_bp.enabled = enabled
+
+        enabled = bool(self.watch_caches)
+        self.new_slab_bp.enabled = enabled
+        self.discard_slab_bp.enabled = enabled
 
     def notify_alloc(self, name, addr):
         if name in self.trace_caches:
@@ -66,6 +113,19 @@ class Slab(gdb.Command):
         if name in self.trace_caches:
             print("Object 0x%x freed in %s" % (addr, name))
         return name in self.break_caches
+
+    def notify_new(self, name, addr):
+        if name in self.watch_caches:
+            # print("Slab 0x%x allocated in %s" % (addr, name))
+            self.slabs_list.append(addr)
+        return False
+
+    def notify_discard(self, name, addr):
+        if name in self.watch_caches:
+            if addr in self.slabs_list:
+                # print("Slab 0x%x freed in %s" % (addr, name))
+                self.slabs_list.remove(addr)
+        return False
 
     @staticmethod
     def get_field_bitpos(type, member):
@@ -195,6 +255,17 @@ class Slab(gdb.Command):
                 s += " " * (indent + 8) + (" - Object (inuse) @ 0x%x\n" % address)
         return s.rstrip("\n")
 
+    def get_full_slabs(self, slab_cache):
+        name = slab_cache["name"].string()
+        if name not in self.watch_caches:
+            return
+        page = gdb.lookup_type("struct page")
+        for addr in self.slabs_list:
+            slab = gdb.Value(addr).cast(page.pointer())
+            slab_cache = slab["slab_cache"]
+            if slab_cache["name"].string() == name and int(slab["frozen"]) == 0 and not slab["freelist"]:
+                yield slab.dereference()
+
     def invoke(self, arg, from_tty):
         if arg:
             args = arg.split()
@@ -207,11 +278,14 @@ class Slab(gdb.Command):
             elif args[0] == "info" and len(args) == 2:
                 self.invoke_info(args[1])
                 return
-            elif args[0] == "trace" and len(args) == 2:
-                self.invoke_trace(args[1])
+            elif args[0] == "trace" and len(args) >= 2:
+                self.invoke_trace(args[1:])
                 return
-            elif args[0] == "break" and len(args) == 2:
-                self.invoke_break(args[1])
+            elif args[0] == "break" and len(args) >= 2:
+                self.invoke_break(args[1:])
+                return
+            elif args[0] == "watch" and len(args) >= 2:
+                self.invoke_watch(args[1:])
                 return
             elif args[0] == "print" and len(args) == 2:
                 self.invoke_print(args[1])
@@ -224,12 +298,15 @@ class Slab(gdb.Command):
 
         if len(args) < 2:
             word = args[0]
-            words = ["list", "info", "trace", "break", "print"]
+            words = ["list", "info", "trace", "break", "watch", "print"]
 
-        elif len(args) == 2:
-            if args[0] in ["info", "trace", "break"]:
-                word = args[1]
-                words = list(Slab.get_cache_names())
+        elif args[0] == "info" and len(args) == 2:
+            word = args[1]
+            words = list(Slab.get_cache_names())
+
+        elif args[0] in ["trace", "break", "watch"] and len(args) >= 2:
+            word = args[-1]
+            words = list(Slab.get_cache_names())
 
         return [s for s in words if s.startswith(word)]
 
@@ -239,6 +316,7 @@ class Slab(gdb.Command):
         print("  slab info <name> - Display extended information about a slab cache")
         print("  slab trace <name> - Start/stop tracing allocations for a slab cache")
         print("  slab break <name> - Start/stop breaking on allocation for a slab cache")
+        print("  slab watch <name> - Start/stop watching full-slabs for a slab cache")
         print("  slab print <slab> - Print the objects contained in a slab")
 
     def invoke_list(self):
@@ -286,7 +364,7 @@ class Slab(gdb.Command):
     def invoke_info(self, name):
         slab_cache = Slab.find_slab_cache(name)
         if slab_cache is None:
-            print("Slab cache %s not found" % name)
+            print("Slab cache '%s' not found" % name)
             return
 
         address = long(slab_cache.address) & Slab.UNSIGNED_LONG
@@ -336,7 +414,7 @@ class Slab(gdb.Command):
                 print("            - " + self.format_slab(slab, 14))
         else:
             print("        Partial List: (none)")
-        fulls = list(Slab.for_each_entry(page, node_cache["full"], "lru"))
+        fulls = list(self.get_full_slabs(slab_cache))
         if fulls:
             print("        Full List:")
             for slab in fulls:
@@ -344,33 +422,50 @@ class Slab(gdb.Command):
         else:
             print("        Full List: (none)")
 
-    def invoke_trace(self, name):
-        slab_cache = Slab.find_slab_cache(name)
-        if slab_cache is None:
-            print("Slab cache %s not found" % name)
-            return
+    def invoke_trace(self, names):
+        for name in names:
+            slab_cache = Slab.find_slab_cache(name)
+            if slab_cache is None:
+                print("Slab cache '%s' not found" % name)
+                return
 
-        if name in self.trace_caches:
-            print("Stopped tracing slab cache")
-            self.trace_caches.remove(name)
-        else:
-            print("Started tracing slab cache")
-            self.trace_caches.append(name)
-        self.update_breakpoints()
+            if name in self.trace_caches:
+                print("Stopped tracing slab cache '%s'" % name)
+                self.trace_caches.remove(name)
+            else:
+                print("Started tracing slab cache '%s'" % name)
+                self.trace_caches.append(name)
+            self.update_breakpoints()
 
-    def invoke_break(self, name):
-        slab_cache = Slab.find_slab_cache(name)
-        if slab_cache is None:
-            print("Slab cache %s not found" % name)
-            return
+    def invoke_break(self, names):
+        for name in names:
+            slab_cache = Slab.find_slab_cache(name)
+            if slab_cache is None:
+                print("Slab cache '%s' not found" % name)
+                return
 
-        if name in self.break_caches:
-            print("Stopped breaking on slab cache")
-            self.break_caches.remove(name)
-        else:
-            print("Started breaking on slab cache")
-            self.break_caches.append(name)
-        self.update_breakpoints()
+            if name in self.break_caches:
+                print("Stopped breaking slab cache '%s'" % name)
+                self.break_caches.remove(name)
+            else:
+                print("Started breaking slab cache '%s'" % name)
+                self.break_caches.append(name)
+            self.update_breakpoints()
+
+    def invoke_watch(self, names):
+        for name in names:
+            slab_cache = Slab.find_slab_cache(name)
+            if slab_cache is None:
+                print("Slab cache '%s' not found" % name)
+                return
+
+            if name in self.watch_caches:
+                print("Stopped watching slab cache '%s'" % name)
+                self.watch_caches.remove(name)
+            else:
+                print("Started watching slab cache '%s'" % name)
+                self.watch_caches.append(name)
+            self.update_breakpoints()
 
     def invoke_print(self, slab):
         try:

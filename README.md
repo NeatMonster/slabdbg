@@ -14,6 +14,7 @@ Usage:
   slab info <name> - Display extended information about a slab cache
   slab trace <name> - Start/stop tracing allocations for a slab cache
   slab break <name> - Start/stop breaking on allocation for a slab cache
+  slab watch <name> - Start/stop watching full-slabs for a slab cache
   slab print <slab> - Print the objects contained in a slab
 ```
 
@@ -138,6 +139,49 @@ Slab @ 0xffffffbdc0e3ca00:
          - Object (inuse) @ 0xffffffc038f2a000
          - Object (free) @ 0xffffffc038f2c000
          - Object (free) @ 0xffffffc038f2e000
+```
+
+### Watch the full slabs of a slab cache
+
+```
+(gdb) slab watch kmalloc-8192
+Started watching slab cache 'kmalloc-8192'
+(gdb) c
+Continuing.
+(gdb) slab info kmalloc-8192
+Slab Cache @ 0xffffffc03a801800:
+    Name: kmalloc-8192
+    Flags: (none)
+    Offset: 0
+    Size: 8192
+    Object Size: 8192
+    Per-CPU Data @ 0xffffffc03ffe0020:
+        Freelist: 0xffffffc038d0a000
+        Page: Slab @ 0xffffffbdc0e34200:
+            Objects: 4
+            In-Use: 4
+            Frozen: 1
+            Freelist: 0x0
+            Page @ 0xffffffc038d08000:
+                 - Object (inuse) @ 0xffffffc038d08000
+                 - Object (free) @ 0xffffffc038d0a000
+                 - Object (free) @ 0xffffffc038d0c000
+                 - Object (free) @ 0xffffffc038d0e000
+        Partial List: (none)
+    Per-Node Data @ 0xffffffc03a800c80:
+        Partial List: (none)
+        Full List:
+            - Slab @ 0xffffffbdc0e6d000:
+                  Objects: 4
+                  In-Use: 4
+                  Frozen: 0
+                  Freelist: 0x0
+                  Page @ 0xffffffc039b40000:
+                       - Object (inuse) @ 0xffffffc039b40000
+                       - Object (inuse) @ 0xffffffc039b42000
+                       - Object (inuse) @ 0xffffffc039b44000
+                       - Object (inuse) @ 0xffffffc039b46000
+---Type <return> to continue, or q <return> to quit---q
 ```
 
 ## Disclaimer
