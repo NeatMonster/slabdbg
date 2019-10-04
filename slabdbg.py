@@ -362,12 +362,9 @@ class Slab(gdb.Command):
                 inuse += int(slab["inuse"]) & Slab.UNSIGNED_INT
                 slabs += 1
 
-            if slabs:
-                objs_per_slab = objs // slabs
-                assert objs_per_slab * slabs == objs
-                pages_per_slab = 1 + size * objs_per_slab // 4096
-            else:
-                objs_per_slab = pages_per_slab = -1
+            oo = slab_cache["oo"]["x"]
+            objs_per_slab = oo & ((1 << 16) - 1)
+            pages_per_slab = 2 ** (oo >> 16)
 
             print(
                 "%-23s %4d %5d %5d %4d %8d %13d %14d"
