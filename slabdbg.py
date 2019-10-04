@@ -24,6 +24,18 @@ class KmemCacheAlloc(gdb.Breakpoint):
             KmemCacheAllocFinish(self.command, name)
 
 
+class KmemCacheFreeFinish(gdb.FinishBreakpoint):
+    def __init__(self, command, name, addr):
+        frame = gdb.newest_frame().older()
+        super(KmemCacheFreeFinish, self).__init__(frame, internal=True)
+        self.command = command
+        self.name = name
+        self.addr = addr
+
+    def stop(self):
+        return self.command.notify_free(self.name, self.addr)
+
+
 class KmemCacheFree(gdb.Breakpoint):
     def __init__(self, command):
         super(KmemCacheFree, self).__init__("kmem_cache_free", internal=True)
@@ -34,7 +46,8 @@ class KmemCacheFree(gdb.Breakpoint):
         name = slab_cache["name"].string()
         x = gdb.selected_frame().read_var("x")
         addr = long(x) & Slab.UNSIGNED_LONG
-        return self.command.notify_free(name, addr)
+        if name in self.command.trace_caches or name in self.command.break_caches:
+            KmemCacheFreeFinish(self.command, name, addr)
 
 
 class NewSlabFinish(gdb.FinishBreakpoint):
