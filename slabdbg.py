@@ -94,8 +94,13 @@ class Slab(gdb.Command):
 
     def __init__(self):
         super(Slab, self).__init__("slab", gdb.COMMAND_USER)
+
+        self.arch = self.get_arch()
         self.per_cpu_offset = gdb.lookup_global_symbol("__per_cpu_offset").value()
-        self.memstart_addr = gdb.lookup_global_symbol("memstart_addr").value()
+        try:
+            self.memstart_addr = gdb.lookup_global_symbol("memstart_addr").value()
+        except Exception:
+            self.memstart_addr = None
 
         self.cache_alloc_bp = KmemCacheAlloc(self)
         self.cache_free_bp = KmemCacheFree(self)
@@ -107,6 +112,33 @@ class Slab(gdb.Command):
         self.watch_caches = []
         self.slabs_list = []
         self.update_breakpoints()
+
+    def is_alive(self):
+        """Check if GDB is running."""
+        try:
+            return gdb.selected_inferior().pid > 0
+        except Exception:
+            return False
+        return False
+
+    def get_arch(self):
+        """Return the binary's architecture."""
+        if self.is_alive():
+            arch = gdb.selected_frame().architecture()
+            return arch.name()
+
+        arch_str = gdb.execute("show architecture", to_string=True).strip()
+        if "The target architecture is set automatically (currently " in arch_str:
+            # architecture can be auto detected
+            arch_str = arch_str.split("(currently ", 1)[1]
+            arch_str = arch_str.split(")", 1)[0]
+        elif "The target architecture is assumed to be " in arch_str:
+            # architecture can be assumed
+            arch_str = arch_str.replace("The target architecture is assumed to be ", "")
+        else:
+            # unknown, we throw an exception to be safe
+            raise RuntimeError("Unknown architecture: {}".format(arch_str))
+        return arch_str
 
     def update_breakpoints(self):
         enabled = bool(self.trace_caches) or bool(self.break_caches)
@@ -193,6 +225,8 @@ class Slab(gdb.Command):
             flags_list.append("SLAB_HWCACHE_ALIGN")
         if flags & 0x00004000:
             flags_list.append("SLAB_CACHE_DMA")
+        if flags & 0x00008000:
+            flags_list.append("SLAB_CACHE_DMA32")
         if flags & 0x00010000:
             flags_list.append("SLAB_STORE_USER")
         if flags & 0x00020000:
@@ -224,14 +258,18 @@ class Slab(gdb.Command):
         return cpu_slab.cast(kmem_cache_cpu.pointer()).dereference()
 
     def page_addr(self, page):
-        memstart_addr = long(self.memstart_addr) & Slab.UNSIGNED_LONG
-        addr = (memstart_addr >> 6) & Slab.UNSIGNED_LONG
-        addr = (addr & 0xFFFFFFFFFF000000) & Slab.UNSIGNED_LONG
-        addr = (0xFFFFFFBDC0000000 - addr) & Slab.UNSIGNED_LONG
-        addr = (page - addr) & Slab.UNSIGNED_LONG
-        addr = (addr >> 6 << 0xC) & Slab.UNSIGNED_LONG
-        addr = (addr - memstart_addr) & Slab.UNSIGNED_LONG
-        return addr | 0xFFFFFFC000000000
+        if 'x86-64' in self.arch:
+            offset = (page-0xffffea0000000000) >> 6 << 0xc
+            return 0xFFFF880000000000 + offset# this value depends on kernel version if could be 0xFFFF888000000000
+        else:
+            memstart_addr = long(self.memstart_addr) & Slab.UNSIGNED_LONG
+            addr = (memstart_addr >> 6) & Slab.UNSIGNED_LONG
+            addr = (addr & 0xFFFFFFFFFF000000) & Slab.UNSIGNED_LONG
+            addr = (0xFFFFFFBDC0000000 - addr) & Slab.UNSIGNED_LONG
+            addr = (page - addr) & Slab.UNSIGNED_LONG
+            addr = (addr >> 6 << 0xC) & Slab.UNSIGNED_LONG
+            addr = (addr - memstart_addr) & Slab.UNSIGNED_LONG
+            return addr | 0xFFFFFFC000000000
 
     @staticmethod
     def walk_freelist(slab_cache, freelist):
