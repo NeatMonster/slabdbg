@@ -458,7 +458,7 @@ class Slab(gdb.Command):
 
         cpu_cache = self.get_slab_cache_cpu(slab_cache)
         address = long(cpu_cache.address) & Slab.UNSIGNED_LONG
-        print("    Per-CPU Data @ 0x%x:" % address)
+        print("    Per-CPU Data @ 0x%x" % address)
         freelist = long(cpu_cache["freelist"]) & Slab.UNSIGNED_LONG
         print("        Freelist: 0x%x" % freelist)
         if cpu_cache["page"]:
@@ -468,10 +468,11 @@ class Slab(gdb.Command):
             print("        Page: (none)")
         if cpu_cache["partial"]:
             print("        Partial List:")
-            slab = cpu_cache["partial"]
-            while slab:
-                print("            - " + self.format_slab(slab.dereference(), 14, cpu_cache["freelist"]))
-                slab = slab.dereference()["next"]
+            slab_ptr = cpu_cache["partial"]
+            while slab_ptr:
+                slab = slab_ptr.dereference()
+                print("            - " + self.format_slab(slab, 14, slab["freelist"]))
+                slab_ptr = slab["next"]
         else:
             print("        Partial List: (none)")
 
