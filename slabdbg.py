@@ -97,6 +97,7 @@ class Slab(gdb.Command):
     def __init__(self):
         super(Slab, self).__init__("slab", gdb.COMMAND_USER)
 
+        self._check_slub()
         self.arch = self.get_arch()
         self.per_cpu_offset = gdb.lookup_global_symbol("__per_cpu_offset").value()
         try:
@@ -114,6 +115,23 @@ class Slab(gdb.Command):
         self.watch_caches = []
         self.slabs_list = []
         self.update_breakpoints()
+
+    def _check_slub(self):
+        """
+        make sure the target kernel is compiled with SLUB, not SLAB or SLOB
+        """
+        allocator = "SLOB"
+        kmem_cache = gdb.lookup_type("struct kmem_cache")
+        for field in gdb.types.deep_items(kmem_cache):
+            name = field[0]
+            if name == 'batchcount':
+                allocator = "SLAB"
+                break
+            elif name == 'inuse':
+                allocator = "SLUB"
+                break
+        if allocator != "SLUB":
+            raise ValueError("slabdbg does not support allocator: %s" % allocator)
 
     def is_alive(self):
         """Check if GDB is running."""
@@ -249,6 +267,10 @@ class Slab(gdb.Command):
             flags_list.append("SLAB_NOTRACK")
         if flags & 0x02000000:
             flags_list.append("SLAB_FAILSLAB")
+        if flags & 0x40000000:
+            flags_list.append("__CMPXCHG_DOUBLE")
+        if flags & 0x80000000:
+            flags_list.append("__OBJECT_POISON	")
         return flags_list
 
     def get_slab_cache_cpu(self, slab_cache):
@@ -262,7 +284,7 @@ class Slab(gdb.Command):
     def page_addr(self, page):
         if 'x86-64' in self.arch:
             offset = (page-0xffffea0000000000) >> 6 << 0xc
-            return 0xFFFF880000000000 + offset# this value depends on kernel version if could be 0xFFFF888000000000
+            return 0xFFFF880000000000 + offset # this value depends on kernel version if could be 0xFFFF888000000000
         else:
             memstart_addr = long(self.memstart_addr) & Slab.UNSIGNED_LONG
             addr = (memstart_addr >> 6) & Slab.UNSIGNED_LONG
