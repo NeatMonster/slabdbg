@@ -186,4 +186,7 @@ Slab Cache @ 0xffffffc03a801800:
 
 ## Disclaimer
 
-I have only tested it on the official Android emulator running an `arm64` system image and a manually compiled kernel.
+It has been tested on:
+the official Android emulator running an `arm64` system image
+a manually compiled `arm64` kernel
+many manually compiled `x86_64` kernels

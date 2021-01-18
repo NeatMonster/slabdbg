@@ -1,5 +1,7 @@
 import gdb
 
+long = int
+
 
 class KmemCacheAllocFinish(gdb.FinishBreakpoint):
     def __init__(self, command, name):
