@@ -454,25 +454,26 @@ class Slab(gdb.Command):
         object_size = int(slab_cache["object_size"])
         print("    Object Size: %d" % object_size)
 
-        cpu_cache = self.get_current_slab_cache_cpu(slab_cache)
-        address = int(cpu_cache.address) & Slab.UNSIGNED_LONG
-        print("    Per-CPU Data @ 0x%x" % address)
-        freelist = int(cpu_cache["freelist"]) & Slab.UNSIGNED_LONG
-        print("        Freelist: 0x%x" % freelist)
-        if cpu_cache["page"]:
-            slab = cpu_cache["page"].dereference()
-            print("        Page: " + self.format_slab(slab, 8, cpu_cache["freelist"]))
-        else:
-            print("        Page: (none)")
-        if cpu_cache["partial"]:
-            print("        Partial List:")
-            slab_ptr = cpu_cache["partial"]
-            while slab_ptr:
-                slab = slab_ptr.dereference()
-                print("            - " + self.format_slab(slab, 14, slab["freelist"]))
-                slab_ptr = slab["next"]
-        else:
-            print("        Partial List: (none)")
+        cpu_cache_list = self.get_all_slab_cache_cpus(slab_cache)
+        for cpu_id, cpu_cache in enumerate(cpu_cache_list):
+            address = int(cpu_cache.address) & Slab.UNSIGNED_LONG
+            print("    Per-CPU Data (cpu %d) @ 0x%x" % (cpu_id, address))
+            freelist = int(cpu_cache["freelist"]) & Slab.UNSIGNED_LONG
+            print("        Freelist: 0x%x" % freelist)
+            if cpu_cache["page"]:
+                slab = cpu_cache["page"].dereference()
+                print("        Page: " + self.format_slab(slab, 8, cpu_cache["freelist"]))
+            else:
+                print("        Page: (none)")
+            if cpu_cache["partial"]:
+                print("        Partial List:")
+                slab_ptr = cpu_cache["partial"]
+                while slab_ptr:
+                    slab = slab_ptr.dereference()
+                    print("            - " + self.format_slab(slab, 14, slab["freelist"]))
+                    slab_ptr = slab["next"]
+            else:
+                print("        Partial List: (none)")
 
         node_cache = slab_cache["node"].dereference().dereference()
         address = int(node_cache.address) & Slab.UNSIGNED_LONG
