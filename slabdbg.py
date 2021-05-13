@@ -1,5 +1,26 @@
 import gdb
 
+FLAGS = {
+        0x00000100: "SLAB_DEBUG_FREE",
+        0x00000400: "SLAB_RED_ZONE",
+        0x00000800: "SLAB_POISON",
+        0x00002000: "SLAB_HWCACHE_ALIGN",
+        0x00004000: "SLAB_CACHE_DMA",
+        0x00008000: "SLAB_CACHE_DMA32",
+        0x00010000: "SLAB_STORE_USER",
+        0x00020000: "SLAB_RECLAIM_ACCOUNT",
+        0x00040000: "SLAB_PANIC",
+        0x00080000: "SLAB_DESTROY_BY_RCU",
+        0x00100000: "SLAB_MEM_SPREAD",
+        0x00200000: "SLAB_TRACE",
+        0x00400000: "SLAB_DEBUG_OBJECTS",
+        0x00800000: "SLAB_NOLEAKTRACE",
+        0x01000000: "SLAB_NOTRACK",
+        0x02000000: "SLAB_FAILSLAB",
+        0x40000000: "__CMPXCHG_DOUBLE",
+        0x80000000: "__OBJECT_POISON",
+        }
+
 long = int
 
 
@@ -95,8 +116,12 @@ class Slab(gdb.Command):
     TYPE_CODE_HAS_FIELDS = [gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION]
 
     def __init__(self):
+        """
+        Internally, everything is kept as gdb.Value
+        """
         super(Slab, self).__init__("slab", gdb.COMMAND_USER)
 
+        self.cpu_num = gdb.lookup_global_symbol("nr_cpu_ids").value()
         self._check_slub()
         self.arch = self.get_arch()
         self.per_cpu_offset = gdb.lookup_global_symbol("__per_cpu_offset").value()
@@ -234,52 +259,27 @@ class Slab(gdb.Command):
 
     @staticmethod
     def get_flags_list(flags):
-        flags_list = []
-        if flags & 0x00000100:
-            flags_list.append("SLAB_DEBUG_FREE")
-        if flags & 0x00000400:
-            flags_list.append("SLAB_RED_ZONE")
-        if flags & 0x00000800:
-            flags_list.append("SLAB_POISON")
-        if flags & 0x00002000:
-            flags_list.append("SLAB_HWCACHE_ALIGN")
-        if flags & 0x00004000:
-            flags_list.append("SLAB_CACHE_DMA")
-        if flags & 0x00008000:
-            flags_list.append("SLAB_CACHE_DMA32")
-        if flags & 0x00010000:
-            flags_list.append("SLAB_STORE_USER")
-        if flags & 0x00020000:
-            flags_list.append("SLAB_RECLAIM_ACCOUNT")
-        if flags & 0x00040000:
-            flags_list.append("SLAB_PANIC")
-        if flags & 0x00080000:
-            flags_list.append("SLAB_DESTROY_BY_RCU")
-        if flags & 0x00100000:
-            flags_list.append("SLAB_MEM_SPREAD")
-        if flags & 0x00200000:
-            flags_list.append("SLAB_TRACE")
-        if flags & 0x00400000:
-            flags_list.append("SLAB_DEBUG_OBJECTS")
-        if flags & 0x00800000:
-            flags_list.append("SLAB_NOLEAKTRACE")
-        if flags & 0x01000000:
-            flags_list.append("SLAB_NOTRACK")
-        if flags & 0x02000000:
-            flags_list.append("SLAB_FAILSLAB")
-        if flags & 0x40000000:
-            flags_list.append("__CMPXCHG_DOUBLE")
-        if flags & 0x80000000:
-            flags_list.append("__OBJECT_POISON	")
-        return flags_list
+        return [FLAGS[x] for x in FLAGS if flags & x == x]
 
-    def get_slab_cache_cpu(self, slab_cache):
+    def get_current_slab_cache_cpu(self, slab_cache):
         void = gdb.lookup_type("void").pointer()
         kmem_cache_cpu = gdb.lookup_type("struct kmem_cache_cpu")
         current_cpu = gdb.selected_thread().num - 1
         cpu_offset = self.per_cpu_offset[current_cpu]
         cpu_slab = gdb.Value(slab_cache["cpu_slab"].cast(void) + cpu_offset)
         return cpu_slab.cast(kmem_cache_cpu.pointer()).dereference()
+
+    def get_all_slab_cache_cpus(self, slab_cache):
+        void = gdb.lookup_type("void").pointer()
+        kmem_cache_cpu = gdb.lookup_type("struct kmem_cache_cpu")
+        offset = slab_cache["cpu_slab"]
+        result = []
+        for cpu_idx in range(self.cpu_num):
+            cpu_offset = self.per_cpu_offset[cpu_idx]
+            cpu_slab = gdb.Value(offset.cast(void) + cpu_offset)
+            cpu_slab = cpu_slab.cast(kmem_cache_cpu.pointer()).dereference()
+            result.append(cpu_slab)
+        return result
 
     def page_addr(self, page):
         if 'x86-64' in self.arch:
@@ -402,7 +402,7 @@ class Slab(gdb.Command):
             obj_size = int(slab_cache["object_size"])
             objs, inuse, slabs = 0, 0, 0
 
-            cpu_cache = self.get_slab_cache_cpu(slab_cache)
+            cpu_cache = self.get_current_slab_cache_cpu(slab_cache)
             if cpu_cache["page"]:
                 objs = inuse = int(cpu_cache["page"]["objects"]) & Slab.UNSIGNED_INT
                 if cpu_cache["freelist"]:
@@ -456,7 +456,7 @@ class Slab(gdb.Command):
         object_size = int(slab_cache["object_size"])
         print("    Object Size: %d" % object_size)
 
-        cpu_cache = self.get_slab_cache_cpu(slab_cache)
+        cpu_cache = self.get_current_slab_cache_cpu(slab_cache)
         address = long(cpu_cache.address) & Slab.UNSIGNED_LONG
         print("    Per-CPU Data @ 0x%x" % address)
         freelist = long(cpu_cache["freelist"]) & Slab.UNSIGNED_LONG
