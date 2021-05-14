@@ -116,10 +116,12 @@ class Slab(gdb.Command):
     def __init__(self):
         """
         Internally, everything is kept as gdb.Value
+        node_num: number of NUMA node
         """
         super(Slab, self).__init__("slab", gdb.COMMAND_USER)
 
         self.cpu_num = gdb.lookup_global_symbol("nr_cpu_ids").value()
+        self.node_num = self._get_node_num()
         self._check_slub()
         self.arch = self.get_arch()
         self.per_cpu_offset = gdb.lookup_global_symbol("__per_cpu_offset").value()
@@ -138,6 +140,17 @@ class Slab(gdb.Command):
         self.watch_caches = []
         self.slabs_list = []
         self.update_breakpoints()
+
+    def _get_node_num(self):
+        """
+        get the number of NUMA nodes in the hardware
+        reference:
+        https://futurewei-cloud.github.io/ARM-Datacenter/qemu/how-to-configure-qemu-numa-nodes/
+        https://elixir.bootlin.com/linux/v4.15/source/include/linux/nodemask.h#L433
+        """
+        node_states = gdb.lookup_global_symbol("node_states").value()
+        node_mask = node_states[1]['bits'][0] # 1 means N_ONLINE
+        return bin(node_mask).count("1")
 
     def _check_slub(self):
         """
@@ -454,6 +467,7 @@ class Slab(gdb.Command):
         object_size = int(slab_cache["object_size"])
         print("    Object Size: %d" % object_size)
 
+        # print per-cpu freelist
         cpu_cache_list = self.get_all_slab_cache_cpus(slab_cache)
         for cpu_id, cpu_cache in enumerate(cpu_cache_list):
             address = int(cpu_cache.address) & Slab.UNSIGNED_LONG
@@ -475,24 +489,26 @@ class Slab(gdb.Command):
             else:
                 print("        Partial List: (none)")
 
-        node_cache = slab_cache["node"].dereference().dereference()
-        address = int(node_cache.address) & Slab.UNSIGNED_LONG
-        print("    Per-Node Data @ 0x%x:" % address)
-        page = gdb.lookup_type("struct page")
-        partials = list(Slab.for_each_entry(page, node_cache["partial"], "lru"))
-        if partials:
-            print("        Partial List:")
-            for slab in partials:
-                print("            - " + self.format_slab(slab, 14))
-        else:
-            print("        Partial List: (none)")
-        fulls = list(self.get_full_slabs(slab_cache))
-        if fulls:
-            print("        Full List:")
-            for slab in fulls:
-                print("            - " + self.format_slab(slab, 14))
-        else:
-            print("        Full List: (none)")
+        # print per-node partial slabs
+        for node_id in range(self.node_num):
+            node_cache = slab_cache["node"][node_id]
+            address = int(node_cache.address) & Slab.UNSIGNED_LONG
+            print("    Per-Node Data (node %d) @ 0x%x:" % (node_id, address))
+            page = gdb.lookup_type("struct page")
+            partials = list(Slab.for_each_entry(page, node_cache["partial"], "lru"))
+            if partials:
+                print("        Partial List:")
+                for slab in partials:
+                    print("            - " + self.format_slab(slab, 14))
+            else:
+                print("        Partial List: (none)")
+            fulls = list(self.get_full_slabs(slab_cache))
+            if fulls:
+                print("        Full List:")
+                for slab in fulls:
+                    print("            - " + self.format_slab(slab, 14))
+            else:
+                print("        Full List: (none)")
 
     def invoke_trace(self, names):
         for name in names:
